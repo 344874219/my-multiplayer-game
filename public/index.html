@@ -54,7 +54,8 @@
     const neonColors = ["#FF00FF", "#00FFFF", "#FFFF00", "#FF0000", "#00FF00", "#FF4500"];
 
     function initGame() {
-        const socket = io(); // socket initialized as requested
+        const socket = io("https://your-game-name.onrender.com");
+
 
         canvas.width = window.innerWidth; 
         canvas.height = window.innerHeight;
