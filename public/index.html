@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    
+    <meta charset="UTF-8">
+    <title>Florr - Health Bars Return</title>
+    <style>
+        body { margin: 0; background: #1a1a1a; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+        canvas { display: block; }
+        #topStats { position: absolute; top: 10px; width: 100%; text-align: center; color: white; font-size: 22px; font-weight: bold; pointer-events: none; text-shadow: 2px 2px 4px #000; z-index: 10; }
+        #inventory { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 110px; background: rgba(0,0,0,0.5); border: 2px solid #444; border-radius: 10px; padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; pointer-events: none; }
+        .slot { width: 40px; height: 40px; background: #222; border: 2px solid #555; border-radius: 5px; position: relative; overflow: hidden; }
+        .reload-bar { position: absolute; bottom: 0; left: 0; width: 100%; background: #3498db; height: 0%; }
+        #minimap { position: absolute; bottom: 20px; right: 20px; width: 150px; height: 150px; background: rgba(0,0,0,0.7); border: 2px solid #555; border-radius: 50%; overflow: hidden; }
+        #waveText { position: absolute; top: 25%; left: 50%; transform: translate(-50%, -50%); font-size: 80px; font-weight: bold; text-shadow: 0 0 30px rgba(255,255,255,0.8); pointer-events: none; opacity: 0; transition: 0.2s; z-index: 20; }
+        #waveText.show { opacity: 1; transform: translate(-50%, -50%) scale(1.3); }
+        .overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #333; padding: 40px; border-radius: 20px; text-align: center; color: white; z-index: 100; border: 4px solid #444; width: 350px; }
+        button { padding: 12px 30px; font-size: 20px; background: #2ecc71; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div id="topStats">Score: <span id="scoreVal">0</span> | Next Wave: <span id="waveTimer">3</span>s</div>
+    <div id="waveText">WAVE 1</div>
+    <div id="inventory"></div>
+    <canvas id="minimap"></canvas>
+
+    <div id="startMenu" class="overlay">
+        <h1>BOSS SLAYER</h1>
+        <p>Health Bars are back!<br>Petals: 100k Damage</p>
+        <button onclick="initGame()">START</button>
+    </div>
+
+    <div id="gameOver" class="overlay" style="display:none; background:#c62828;">
+        <h1>YOU DIED</h1>
+        <p>Final Score: <span id="finalScore">0</span></p>
+        <button onclick="initGame()">RETRY</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- socket.io added exactly as requested -->
+    <script src="/socket.io/socket.io.js"></script>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const mCanvas = document.getElementById('minimap');
+    const mCtx = mCanvas.getContext('2d');
+    const waveDisplay = document.getElementById('waveText');
+
+    const WORLD_RADIUS = 1500, RELOAD_TIME = 30; 
+    let player, mobs, score, gameActive, isSprinting, isAttacking;
+    let petals = [], particles = [], waveCount = 0, waveTimer = 3, petalAngle = 0, camera = { x: 0, y: 0 };
+    const neonColors = ["#FF00FF", "#00FFFF", "#FFFF00", "#FF0000", "#00FF00", "#FF4500"];
+
+    function initGame() {
+        const socket = io(); // socket initialized as requested
+
+        canvas.width = window.innerWidth; 
+        canvas.height = window.innerHeight;
+        score = 0; 
+        gameActive = true; 
+        particles = []; 
+        waveCount = 0; 
+        waveTimer = 3;
+
+        player = { 
+            x: 0, 
+            y: 0, 
+            radius: 35, 
+            hp: 5000, 
+            maxHp: 5000, 
+            speed: 9, 
+            petalDistance: 40 
+        };
+
+        petals = []; 
+        document.getElementById('inventory').innerHTML = '';
+
+        for(let i=0; i<20; i++) {
+            const slot = document.createElement('div'); 
+            slot.className = 'slot';
+            const bar = document.createElement('div'); 
+            bar.className = 'reload-bar';
+            slot.appendChild(bar); 
+            document.getElementById('inventory').appendChild(slot);
+            petals.push({ active: true, timer: 0, ui: bar });
+        }
+
+        mobs = []; 
+        document.getElementById('startMenu').style.display = "none"; 
+        document.getElementById('gameOver').style.display = "none";
+
+        const waveLoop = setInterval(() => {
+            if(!gameActive) { 
+                clearInterval(waveLoop); 
+                return; 
+            }
+            if(--waveTimer <= 0) { 
+                waveCount++; 
+                triggerWave(); 
+                spawnWave(); 
+                waveTimer = 3; 
+            }
+            document.getElementById('waveTimer').innerText = waveTimer;
+        }, 1000);
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    function triggerWave() {
+        waveDisplay.innerText = waveCount % 10 === 0 ? "MEGA BOSS!" : "WAVE " + waveCount;
+        waveDisplay.style.color = waveCount % 10 === 0 ? "#ff0000" : "#f1c40f";
+        waveDisplay.classList.add('show'); 
+        setTimeout(() => waveDisplay.classList.remove('show'), 1200);
+    }
+
+    function spawnWave() {
+        if (waveCount % 10 === 0) spawnMob(true);
+        else for(let i=0; i<5+(waveCount*2); i++) spawnMob(false);
+    }
+
+    function spawnMob(isBoss) {
+        let a = Math.random() * Math.PI * 2, d = WORLD_RADIUS - 100;
+        mobs.push({
+            x: Math.cos(a)*d, 
+            y: Math.sin(a)*d, 
+            radius: isBoss ? 220 : 25,
+            color: isBoss ? "#000" : "#c62828", 
+            hp: isBoss ? 50000000 : 10000, 
+            maxHp: isBoss ? 50000000 : 10000, 
+            speed: isBoss ? 0.8 : 3.5, 
+            isBoss: isBoss
+        });
+    }
+
+    function drawHealthBar(x, y, radius, hp, maxHp) {
+        const w = radius*2.5, h = 8;
+        ctx.fillStyle = "#000"; 
+        ctx.fillRect(x-w/2, y-radius-20, w, h);
+        ctx.fillStyle = hp / maxHp > 0.5 ? "#2ecc71" : "#e74c3c";
+        ctx.fillRect(x-w/2, y-radius-20, w*(hp/maxHp), h);
+    }
+
+    function drawMinimap() {
+        mCtx.clearRect(0,0,150,150);
+        mCtx.fillStyle = "rgba(118, 192, 67, 0.5)"; 
+        mCtx.beginPath(); 
+        mCtx.arc(75,75,70,0,Math.PI*2); 
+        mCtx.fill();
+
+        mCtx.fillStyle = "white"; 
+        mCtx.fillRect(
+            75+(player.x/WORLD_RADIUS)*70-2, 
+            75+(player.y/WORLD_RADIUS)*70-2, 
+            4, 4
+        );
+
+        mobs.forEach(m => {
+            mCtx.fillStyle = m.isBoss ? "red" : "orange";
+            mCtx.beginPath(); 
+            mCtx.arc(
+                75+(m.x/WORLD_RADIUS)*70, 
+                75+(m.y/WORLD_RADIUS)*70, 
+                m.isBoss ? 4 : 2, 
+                0, Math.PI*2
+            ); 
+            mCtx.fill();
+        });
+    }
+
+    let mouseX = 0, mouseY = 0;
+    window.addEventListener('mousemove', e => { 
+        mouseX = e.clientX; 
+        mouseY = e.clientY; 
+    });
+
+    window.addEventListener('keydown', e => { 
+        if(e.shiftKey) isSprinting = true; 
+        if(e.code === "Space") isAttacking = true; 
+    });
+
+    window.addEventListener('keyup', e => { 
+        if(!e.shiftKey) isSprinting = false; 
+        if(e.code === "Space") isAttacking = false; 
+    });
+
+    function gameLoop() {
+        if (!gameActive) return;
+
+        if (isSprinting && player.hp < player.maxHp) player.hp += 15;
+
+        camera.x = player.x - canvas.width/2; 
+        camera.y = player.y - canvas.height/2;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.save(); 
+        ctx.translate(-camera.x, -camera.y);
+
+        ctx.beginPath(); 
+        ctx.arc(0, 0, WORLD_RADIUS, 0, Math.PI*2); 
+        ctx.fillStyle = "#76c043"; 
+        ctx.fill();
+        ctx.strokeStyle = "#558b2f"; 
+        ctx.lineWidth = 20; 
+        ctx.stroke();
+
+        let angle = Math.atan2(
+            mouseY - canvas.height/2, 
+            mouseX - canvas.width/2
+        );
+
+        player.x += Math.cos(angle) * (isSprinting ? player.speed * 1.8 : player.speed);
+        player.y += Math.sin(angle) * (isSprinting ? player.speed * 1.8 : player.speed);
+
+        let dist = Math.hypot(player.x, player.y);
+        if(dist > WORLD_RADIUS - 35) { 
+            player.x *= (WORLD_RADIUS-35)/dist; 
+            player.y *= (WORLD_RADIUS-35)/dist; 
+        }
+
+        petalAngle += isAttacking ? 0.12 : 0.05;
+        player.petalDistance += ((isAttacking ? 280 : 45) - player.petalDistance) * 0.1;
+
+        mobs.forEach((m, i) => {
+            let dx = player.x - m.x, dy = player.y - m.y, d = Math.hypot(dx, dy);
+            m.x += (dx/d)*m.speed; 
+            m.y += (dy/d)*m.speed;
+
+            if(d < player.radius + m.radius) player.hp -= 5;
+
+            ctx.fillStyle = m.color; 
+            ctx.beginPath(); 
+            ctx.arc(m.x, m.y, m.radius, 0, Math.PI*2); 
+            ctx.fill();
+
+            if(m.isBoss) { 
+                ctx.strokeStyle = "gold"; 
+                ctx.lineWidth = 8; 
+                ctx.stroke(); 
+            }
+
+            drawHealthBar(m.x, m.y, m.radius, m.hp, m.maxHp);
+        });
+
+        petals.forEach((p, i) => {
+            if(!p.active) {
+                p.timer++; 
+                p.ui.style.height = (p.timer/RELOAD_TIME*100) + "%";
+                if(p.timer >= RELOAD_TIME) { 
+                    p.active = true; 
+                    p.timer = 0; 
+                    p.ui.style.height = "0%"; 
+                }
+                return;
+            }
+
+            let px = player.x + Math.cos(petalAngle + (i * Math.PI * 2 / 20)) * player.petalDistance;
+            let py = player.y + Math.sin(petalAngle + (i * Math.PI * 2 / 20)) * player.petalDistance;
+
+            ctx.fillStyle = "#3498db"; 
+            ctx.beginPath(); 
+            ctx.arc(px, py, 15, 0, Math.PI*2); 
+            ctx.fill();
+
+            mobs.forEach((m, j) => {
+                if(Math.hypot(px-m.x, py-m.y) < 15+m.radius) {
+                    m.hp -= 100000; 
+                    p.active = false;
+                    if(m.hp <= 0) { 
+                        score += m.isBoss ? 100000 : 100; 
+                        mobs.splice(j, 1); 
+                        document.getElementById('scoreVal').innerText = score; 
+                    }
+                }
+            });
+        });
+
+        ctx.fillStyle = "#ffeb3b"; 
+        ctx.beginPath(); 
+        ctx.arc(player.x, player.y, player.radius, 0, Math.PI*2); 
+        ctx.fill();
+
+        drawHealthBar(player.x, player.y, player.radius, player.hp, player.maxHp);
+        drawMinimap();
+
+        if(player.hp <= 0) { 
+            gameActive = false; 
+            document.getElementById('gameOver').style.display = "block"; 
+            document.getElementById('finalScore').innerText = score;
+        }
+
+        ctx.restore(); 
+        requestAnimationFrame(gameLoop);
+    }
+</script>
+</body>
+</html>
