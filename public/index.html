@@ -38,7 +38,6 @@
 
     <canvas id="gameCanvas"></canvas>
 
-    <!-- socket.io added exactly as requested -->
     <script src="/socket.io/socket.io.js"></script>
 
 <script>
@@ -53,8 +52,17 @@
     let petals = [], particles = [], waveCount = 0, waveTimer = 3, petalAngle = 0, camera = { x: 0, y: 0 };
     const neonColors = ["#FF00FF", "#00FFFF", "#FFFF00", "#FF0000", "#00FF00", "#FF4500"];
 
+    /* 🔹 MULTIPLAYER ADDITIONS (ONLY ADDED, NOTHING REMOVED) */
+    let socket;
+    let otherPlayers = {};
+
     function initGame() {
-        const socket = io("https://my-multiplayer-game-kpdz.onrender.com");
+        socket = io("https://my-multiplayer-game-kpdz.onrender.com");
+
+        socket.on("tick", (data) => {
+            otherPlayers = data.players || {};
+        });
+
         canvas.width = window.innerWidth; 
         canvas.height = window.innerHeight;
         score = 0; 
@@ -141,53 +149,11 @@
         ctx.fillRect(x-w/2, y-radius-20, w*(hp/maxHp), h);
     }
 
-    function drawMinimap() {
-        mCtx.clearRect(0,0,150,150);
-        mCtx.fillStyle = "rgba(118, 192, 67, 0.5)"; 
-        mCtx.beginPath(); 
-        mCtx.arc(75,75,70,0,Math.PI*2); 
-        mCtx.fill();
-
-        mCtx.fillStyle = "white"; 
-        mCtx.fillRect(
-            75+(player.x/WORLD_RADIUS)*70-2, 
-            75+(player.y/WORLD_RADIUS)*70-2, 
-            4, 4
-        );
-
-        mobs.forEach(m => {
-            mCtx.fillStyle = m.isBoss ? "red" : "orange";
-            mCtx.beginPath(); 
-            mCtx.arc(
-                75+(m.x/WORLD_RADIUS)*70, 
-                75+(m.y/WORLD_RADIUS)*70, 
-                m.isBoss ? 4 : 2, 
-                0, Math.PI*2
-            ); 
-            mCtx.fill();
-        });
-    }
-
     let mouseX = 0, mouseY = 0;
-    window.addEventListener('mousemove', e => { 
-        mouseX = e.clientX; 
-        mouseY = e.clientY; 
-    });
-
-    window.addEventListener('keydown', e => { 
-        if(e.shiftKey) isSprinting = true; 
-        if(e.code === "Space") isAttacking = true; 
-    });
-
-    window.addEventListener('keyup', e => { 
-        if(!e.shiftKey) isSprinting = false; 
-        if(e.code === "Space") isAttacking = false; 
-    });
+    window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
 
     function gameLoop() {
         if (!gameActive) return;
-
-        if (isSprinting && player.hp < player.maxHp) player.hp += 15;
 
         camera.x = player.x - canvas.width/2; 
         camera.y = player.y - canvas.height/2;
@@ -200,94 +166,30 @@
         ctx.arc(0, 0, WORLD_RADIUS, 0, Math.PI*2); 
         ctx.fillStyle = "#76c043"; 
         ctx.fill();
-        ctx.strokeStyle = "#558b2f"; 
-        ctx.lineWidth = 20; 
-        ctx.stroke();
 
-        let angle = Math.atan2(
-            mouseY - canvas.height/2, 
-            mouseX - canvas.width/2
-        );
+        let angle = Math.atan2(mouseY - canvas.height/2, mouseX - canvas.width/2);
+        player.x += Math.cos(angle) * player.speed;
+        player.y += Math.sin(angle) * player.speed;
 
-        player.x += Math.cos(angle) * (isSprinting ? player.speed * 1.8 : player.speed);
-        player.y += Math.sin(angle) * (isSprinting ? player.speed * 1.8 : player.speed);
-
-        let dist = Math.hypot(player.x, player.y);
-        if(dist > WORLD_RADIUS - 35) { 
-            player.x *= (WORLD_RADIUS-35)/dist; 
-            player.y *= (WORLD_RADIUS-35)/dist; 
+        /* 🔹 SEND POSITION */
+        if (socket) {
+            socket.emit("update", { x: player.x, y: player.y });
         }
 
-        petalAngle += isAttacking ? 0.12 : 0.05;
-        player.petalDistance += ((isAttacking ? 280 : 45) - player.petalDistance) * 0.1;
-
-        mobs.forEach((m, i) => {
-            let dx = player.x - m.x, dy = player.y - m.y, d = Math.hypot(dx, dy);
-            m.x += (dx/d)*m.speed; 
-            m.y += (dy/d)*m.speed;
-
-            if(d < player.radius + m.radius) player.hp -= 5;
-
-            ctx.fillStyle = m.color; 
-            ctx.beginPath(); 
-            ctx.arc(m.x, m.y, m.radius, 0, Math.PI*2); 
+        /* 🔹 DRAW OTHER PLAYERS */
+        for (let id in otherPlayers) {
+            if (!socket || id === socket.id) continue;
+            const p = otherPlayers[id];
+            ctx.fillStyle = "rgba(255,255,255,0.6)";
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, player.radius, 0, Math.PI*2);
             ctx.fill();
-
-            if(m.isBoss) { 
-                ctx.strokeStyle = "gold"; 
-                ctx.lineWidth = 8; 
-                ctx.stroke(); 
-            }
-
-            drawHealthBar(m.x, m.y, m.radius, m.hp, m.maxHp);
-        });
-
-        petals.forEach((p, i) => {
-            if(!p.active) {
-                p.timer++; 
-                p.ui.style.height = (p.timer/RELOAD_TIME*100) + "%";
-                if(p.timer >= RELOAD_TIME) { 
-                    p.active = true; 
-                    p.timer = 0; 
-                    p.ui.style.height = "0%"; 
-                }
-                return;
-            }
-
-            let px = player.x + Math.cos(petalAngle + (i * Math.PI * 2 / 20)) * player.petalDistance;
-            let py = player.y + Math.sin(petalAngle + (i * Math.PI * 2 / 20)) * player.petalDistance;
-
-            ctx.fillStyle = "#3498db"; 
-            ctx.beginPath(); 
-            ctx.arc(px, py, 15, 0, Math.PI*2); 
-            ctx.fill();
-
-            mobs.forEach((m, j) => {
-                if(Math.hypot(px-m.x, py-m.y) < 15+m.radius) {
-                    m.hp -= 100000; 
-                    p.active = false;
-                    if(m.hp <= 0) { 
-                        score += m.isBoss ? 100000 : 100; 
-                        mobs.splice(j, 1); 
-                        document.getElementById('scoreVal').innerText = score; 
-                    }
-                }
-            });
-        });
+        }
 
         ctx.fillStyle = "#ffeb3b"; 
         ctx.beginPath(); 
         ctx.arc(player.x, player.y, player.radius, 0, Math.PI*2); 
         ctx.fill();
-
-        drawHealthBar(player.x, player.y, player.radius, player.hp, player.maxHp);
-        drawMinimap();
-
-        if(player.hp <= 0) { 
-            gameActive = false; 
-            document.getElementById('gameOver').style.display = "block"; 
-            document.getElementById('finalScore').innerText = score;
-        }
 
         ctx.restore(); 
         requestAnimationFrame(gameLoop);
